@@ -43,7 +43,7 @@
 <body>
 
 <h2>Contrast-based Screen Number OCR</h2>
-<button id="start">화면 공유 시작v0.4</button>
+<button id="start">화면 공유 시작 (개선 v2.0)</button>
 <div id="result">---</div>
 
 <div id="container">
@@ -123,7 +123,7 @@ function loop() {
   if (roi && roi.w > 10 && roi.h > 10) {
     const img = capCtx.getImageData(roi.x, roi.y, roi.w, roi.h);
     const value = stableValue(readNumber(img));
-    resultDiv.textContent = value || "---"; // Use || to handle empty strings
+    resultDiv.textContent = value || "---";
   }
   requestAnimationFrame(loop);
 }
@@ -132,18 +132,14 @@ function loop() {
 
 function readNumber(img) {
   const gray = toGray(img);
-  // NEW: Use Otsu's method for robust binarization
-  const bin = otsuBinarize(gray);
-  // IMPROVED: Use true majority for denoising
+  const bin = otsuBinarize(gray, img.width, img.height); // Pass width/height
   const clean = denoise(bin, img.width, img.height);
-  // IMPROVED: More robust digit splitting logic
   const digits = splitDigits(clean, img.width, img.height);
 
   if (!digits.length) return null;
 
   let out = "";
   for (const [l, r] of digits) {
-    // Extract the image for this specific digit
     const digitW = r - l;
     const digitH = img.height;
     const digitImg = new Uint8Array(digitW * digitH);
@@ -153,7 +149,6 @@ function readNumber(img) {
       }
     }
     
-    // NEW: Recognize digit using template matching
     out += matchTemplate(digitImg, digitW, digitH);
   }
   return out;
@@ -171,45 +166,57 @@ function toGray(img) {
   return g;
 }
 
-/* ---- NEW: Otsu's Binarization ---- */
-function otsuBinarize(gray) {
-  const hist = new Int32Array(256).fill(0);
-  for (let i = 0; i < gray.length; i++) {
-    hist[gray[i]]++;
-  }
-
-  const total = gray.length;
-  let sum = 0;
-  for (let t = 0; t < 256; t++) sum += t * hist[t];
-
-  let sumB = 0;
-  let wB = 0;
-  let wF = 0;
-  let mB, mF;
-  let max = 0;
-  let between = 0;
-  let threshold = 0;
-
-  for (let t = 0; t < 256; t++) {
-    wB += hist[t];
-    if (wB === 0) continue;
-    wF = total - wB;
-    if (wF === 0) break;
-    sumB += t * hist[t];
-    mB = sumB / wB;
-    mF = (sum - sumB) / wF;
-    between = wB * wF * (mB - mF) * (mB - mF);
-    if (between > max) {
-      max = between;
-      threshold = t;
+/* ---- NEW: Otsu's Binarization with Auto-Invert ---- */
+function otsuBinarize(gray, w, h) {
+    const hist = new Int32Array(256).fill(0);
+    for (let i = 0; i < gray.length; i++) {
+        hist[gray[i]]++;
     }
-  }
 
-  const bin = new Uint8Array(gray.length);
-  for (let i = 0; i < gray.length; i++) {
-    bin[i] = gray[i] <= threshold ? 1 : 0;
-  }
-  return bin;
+    const total = gray.length;
+    let sum = 0;
+    for (let t = 0; t < 256; t++) sum += t * hist[t];
+
+    let sumB = 0;
+    let wB = 0;
+    let wF = 0;
+    let mB, mF;
+    let max = 0;
+    let between = 0;
+    let threshold = 0;
+    let finalMB = 0;
+    let finalMF = 0;
+
+    for (let t = 0; t < 256; t++) {
+        wB += hist[t];
+        if (wB === 0) continue;
+        wF = total - wB;
+        if (wF === 0) break;
+        sumB += t * hist[t];
+        mB = sumB / wB;
+        mF = (sum - sumB) / wF;
+        between = wB * wF * (mB - mF) * (mB - mF);
+        if (between > max) {
+            max = between;
+            threshold = t;
+            finalMB = mB;
+            finalMF = mF;
+        }
+    }
+
+    const bin = new Uint8Array(gray.length);
+    // If mean of foreground is greater than mean of background,
+    // it's likely light text on a dark background.
+    const lightOnDark = finalMF > finalMB;
+
+    for (let i = 0; i < gray.length; i++) {
+        if (lightOnDark) {
+            bin[i] = gray[i] > threshold ? 1 : 0;
+        } else {
+            bin[i] = gray[i] <= threshold ? 1 : 0;
+        }
+    }
+    return bin;
 }
 
 /* ---- IMPROVED: denoise (3x3 true majority) ---- */
@@ -221,7 +228,7 @@ function denoise(bin, w, h) {
       for (let dy = -1; dy <= 1; dy++)
         for (let dx = -1; dx <= 1; dx++)
           c += bin[(y + dy) * w + (x + dx)];
-      out[y * w + x] = c >= 5 ? 1 : 0; // Use true majority (5/9)
+      out[y * w + x] = c >= 5 ? 1 : 0;
     }
   }
   return out;
@@ -240,7 +247,7 @@ function splitDigits(bin, w, h) {
   let inDigit = false;
   let start = 0;
   for (let x = 0; x < w; x++) {
-    const hasPixels = proj[x] > 1; // More robust check
+    const hasPixels = proj[x] > 1; 
     if (hasPixels && !inDigit) {
       start = x;
       inDigit = true;
@@ -258,17 +265,15 @@ function splitDigits(bin, w, h) {
 }
 
 /* ================== NEW: Template Matching Engine ================== */
-
-// 1. Define Templates (10x15 resolution)
 const TEMPLATES = {
   '0': "01111111011000011110000111100001111000011110011011110011011110011011110000111100001111000011011111110",
   '1': "000110000001110000001011000000001100000000110000000011000000001100000000110000000011000000001100000011111111",
-  '2': "01111110110000111000001100000011000001100001100011000110011001100110001111111111111111",
+  '2': "01111110110000111000001100000011000001100001100011001100110011001100011111111111111111",
   '3': "0111111011000011000000110000011001111100000011000000111100001111000011011111110",
   '4': "0000110000001110000011110000110110001100110011111111110000110000000011000000001100000000110000",
   '5': "1111111111100000001100000001111111010000001100000011000001111000011111111110",
   '6': "0011111001100000011000000011111110110000111100001111000011011111110",
-  '7': "111111111100000111000001100000110000011000011000001100000110000011000",
+  '7': "1111111111000001110000011000001100001100001100001100001100000110000011000",
   '8': "01111110110000111100001101111110110000111100001111000011011111110",
   '9': "011111101100001111000011011111111000000110000011000011000110001111100",
 };
@@ -280,7 +285,6 @@ for (const key in TEMPLATES) {
   BINARY_TEMPLATES[key] = TEMPLATES[key].split('').map(Number);
 }
 
-// 2. Resizing function (Nearest Neighbor)
 function resize(digit, w, h, out_w, out_h) {
   const out = new Uint8Array(out_w * out_h);
   const x_ratio = w / out_w;
@@ -295,7 +299,6 @@ function resize(digit, w, h, out_w, out_h) {
   return out;
 }
 
-// 3. Template matching function
 function matchTemplate(digitImg, w, h) {
   if (w < 1 || h < 1) return "";
   
@@ -318,9 +321,7 @@ function matchTemplate(digitImg, w, h) {
     }
   }
   
-  // Confidence threshold: if the difference is too high, it's not a match.
-  // Max difference is 150. A 35% threshold is about 52.
-  if (minDiff > 52) {
+  if (minDiff > 52) { // Confidence threshold (approx 35% error)
       return "";
   }
 
