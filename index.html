@@ -1,9 +1,8 @@
-<!--- gpt 1 --->
 <!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
-<title>Screen Number Tracker v0.1 </title>
+<title>Contrast-based Number OCR v.0.2</title>
 <style>
   body {
     margin: 0;
@@ -12,38 +11,28 @@
     font-family: monospace;
     text-align: center;
   }
-
   #container {
     position: relative;
     display: inline-block;
     margin-top: 10px;
   }
-
-  canvas {
-    display: block;
-  }
-
+  canvas { display: block; }
   #capture {
     position: absolute;
-    top: 0;
-    left: 0;
+    top: 0; left: 0;
     z-index: 1;
   }
-
   #overlay {
     position: absolute;
-    top: 0;
-    left: 0;
+    top: 0; left: 0;
     z-index: 2;
     pointer-events: auto;
     cursor: crosshair;
   }
-
   #result {
     font-size: 32px;
     margin-top: 10px;
   }
-
   button {
     font-size: 16px;
     padding: 8px 16px;
@@ -53,7 +42,7 @@
 </head>
 <body>
 
-<h2>Screen Number Tracker</h2>
+<h2>Contrast-based Screen Number OCR</h2>
 <button id="start">화면 공유 시작</button>
 <div id="result">---</div>
 
@@ -65,6 +54,7 @@
 <video id="video" autoplay playsinline hidden></video>
 
 <script>
+/* ================== Setup ================== */
 const video = document.getElementById("video");
 const cap = document.getElementById("capture");
 const ov = document.getElementById("overlay");
@@ -76,6 +66,7 @@ let roi = null;
 let selecting = false;
 let sx = 0, sy = 0;
 
+/* ================== Screen Share ================== */
 document.getElementById("start").onclick = async () => {
   const stream = await navigator.mediaDevices.getDisplayMedia({
     video: { frameRate: 30 }
@@ -96,8 +87,7 @@ document.getElementById("start").onclick = async () => {
   };
 };
 
-/* ===== ROI Drag ===== */
-
+/* ================== ROI Drag ================== */
 ov.addEventListener("mousedown", e => {
   selecting = true;
   sx = e.offsetX;
@@ -117,7 +107,7 @@ ov.addEventListener("mousemove", e => {
     h: Math.abs(y - sy)
   };
 
-  ovCtx.clearRect(0, 0, ov.width, ov.height);
+  ovCtx.clearRect(0,0,ov.width,ov.height);
   ovCtx.strokeStyle = "lime";
   ovCtx.lineWidth = 2;
   ovCtx.strokeRect(roi.x, roi.y, roi.w, roi.h);
@@ -126,78 +116,113 @@ ov.addEventListener("mousemove", e => {
 ov.addEventListener("mouseup", () => selecting = false);
 ov.addEventListener("mouseleave", () => selecting = false);
 
-/* ===== Main Loop ===== */
-
+/* ================== Main Loop ================== */
 function loop() {
   capCtx.drawImage(video, 0, 0);
 
   if (roi && roi.w > 10 && roi.h > 10) {
-    const img = capCtx.getImageData(
-      roi.x, roi.y, roi.w, roi.h
-    );
-    const val = readNumber(img);
-    resultDiv.textContent = val ?? "---";
+    const img = capCtx.getImageData(roi.x, roi.y, roi.w, roi.h);
+    const value = stableValue(readNumber(img));
+    resultDiv.textContent = value ?? "---";
   }
-
   requestAnimationFrame(loop);
 }
 
-/* ===== OCR ===== */
+/* ================== OCR Core ================== */
 
 function readNumber(img) {
-  const g = toGray(img);
-  const digits = splitDigits(g, img.width, img.height);
+  const gray = toGray(img);
+  const bin = adaptiveBinarize(gray);
+  const clean = denoise(bin, img.width, img.height);
+  const digits = splitDigits(clean, img.width, img.height);
+
   if (!digits.length) return null;
 
   let out = "";
   for (const [l, r] of digits) {
-    let bits = 0;
-    for (let x = l; x < r; x++) {
-      for (let y = 0; y < img.height; y++) {
-        if (g[y*img.width + x] < 140) {
-          bits |= 1 << Math.floor((y / img.height) * 7);
-        }
-      }
-    }
+    const bits = digitBits(clean, img.width, img.height, l, r);
     out += matchDigit(bits);
   }
   return out;
 }
 
+/* ---- grayscale ---- */
 function toGray(img) {
-  const g = [];
-  for (let i = 0; i < img.data.length; i += 4) {
-    g.push(
-      img.data[i]*0.3 +
-      img.data[i+1]*0.59 +
-      img.data[i+2]*0.11
-    );
+  const g = new Uint8Array(img.width * img.height);
+  for (let i = 0, j = 0; i < img.data.length; i += 4, j++) {
+    g[j] =
+      img.data[i] * 0.3 +
+      img.data[i+1] * 0.59 +
+      img.data[i+2] * 0.11;
   }
   return g;
 }
 
-function splitDigits(gray, w, h) {
-  const cols = [];
-  for (let x = 0; x < w; x++) {
-    let s = 0;
-    for (let y = 0; y < h; y++) {
-      s += gray[y*w + x];
-    }
-    cols.push(s / h);
+/* ---- adaptive binarization ---- */
+function adaptiveBinarize(gray) {
+  let sum = 0;
+  for (let i = 0; i < gray.length; i++) sum += gray[i];
+  const avg = sum / gray.length;
+
+  const bin = new Uint8Array(gray.length);
+  for (let i = 0; i < gray.length; i++) {
+    bin[i] = gray[i] < avg * 0.9 ? 1 : 0;
   }
+  return bin;
+}
+
+/* ---- denoise (3x3 majority) ---- */
+function denoise(bin, w, h) {
+  const out = new Uint8Array(bin.length);
+  for (let y = 1; y < h-1; y++) {
+    for (let x = 1; x < w-1; x++) {
+      let c = 0;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++)
+          c += bin[(y+dy)*w + (x+dx)];
+      out[y*w + x] = c >= 4 ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+/* ---- vertical projection split ---- */
+function splitDigits(bin, w, h) {
+  const proj = new Int32Array(w);
+  for (let x = 0; x < w; x++)
+    for (let y = 0; y < h; y++)
+      proj[x] += bin[y*w + x];
 
   const res = [];
-  let start = null;
-  for (let i = 0; i < cols.length; i++) {
-    if (cols[i] < 200 && start === null) start = i;
-    if (cols[i] >= 200 && start !== null) {
-      if (i - start > 2) res.push([start, i]);
-      start = null;
+  let start = -1;
+  for (let x = 0; x < w; x++) {
+    if (proj[x] > h * 0.05 && start === -1) start = x;
+    if (proj[x] <= h * 0.02 && start !== -1) {
+      if (x - start > 3) res.push([start, x]);
+      start = -1;
     }
   }
   return res;
 }
 
+/* ---- 7-segment-like bit extraction ---- */
+function digitBits(bin, w, h, l, r) {
+  const seg = new Int32Array(7);
+  for (let y = 0; y < h; y++) {
+    const s = Math.min(6, Math.floor(y / (h / 7)));
+    for (let x = l; x < r; x++) {
+      seg[s] += bin[y*w + x];
+    }
+  }
+
+  let bits = 0;
+  for (let i = 0; i < 7; i++) {
+    if (seg[i] > (r-l) * h * 0.02) bits |= 1 << i;
+  }
+  return bits;
+}
+
+/* ---- digit match ---- */
 const DIGITS = {
   0: 0b1110111,
   1: 0b0100100,
@@ -226,11 +251,22 @@ function matchDigit(bits) {
 
 function bitCount(n) {
   let c = 0;
-  while (n) {
-    n &= n - 1;
-    c++;
-  }
+  while (n) { n &= n-1; c++; }
   return c;
+}
+
+/* ================== Frame Stabilizer ================== */
+const history = [];
+const MAX_H = 5;
+
+function stableValue(v) {
+  if (!v) return v;
+  history.push(v);
+  if (history.length > MAX_H) history.shift();
+
+  const map = {};
+  for (const x of history) map[x] = (map[x] || 0) + 1;
+  return Object.entries(map).sort((a,b)=>b[1]-a[1])[0][0];
 }
 </script>
 </body>
