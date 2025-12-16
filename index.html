@@ -5,23 +5,48 @@
 <title>Screen Number Tracker</title>
 <style>
   body {
+    margin: 0;
     background: #111;
     color: #0f0;
     font-family: monospace;
     text-align: center;
   }
-  canvas {
-    border: 1px solid #333;
-    display: block;
-    margin: 10px auto;
+
+  #container {
+    position: relative;
+    display: inline-block;
+    margin-top: 10px;
   }
+
+  canvas {
+    display: block;
+  }
+
+  #capture {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1;
+  }
+
+  #overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 2;
+    pointer-events: auto;
+    cursor: crosshair;
+  }
+
   #result {
     font-size: 32px;
     margin-top: 10px;
   }
+
   button {
     font-size: 16px;
     padding: 8px 16px;
+    margin-top: 10px;
   }
 </style>
 </head>
@@ -31,9 +56,12 @@
 <button id="start">화면 공유 시작</button>
 <div id="result">---</div>
 
+<div id="container">
+  <canvas id="capture"></canvas>
+  <canvas id="overlay"></canvas>
+</div>
+
 <video id="video" autoplay playsinline hidden></video>
-<canvas id="capture"></canvas>
-<canvas id="overlay"></canvas>
 
 <script>
 const video = document.getElementById("video");
@@ -54,21 +82,30 @@ document.getElementById("start").onclick = async () => {
   video.srcObject = stream;
 
   video.onloadedmetadata = () => {
-    cap.width = ov.width = video.videoWidth;
-    cap.height = ov.height = video.videoHeight;
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+
+    cap.width = ov.width = w;
+    cap.height = ov.height = h;
+
+    cap.style.width = ov.style.width = w + "px";
+    cap.style.height = ov.style.height = h + "px";
+
     requestAnimationFrame(loop);
   };
 };
 
-/* ROI selection */
-ov.onmousedown = e => {
+/* ===== ROI Drag ===== */
+
+ov.addEventListener("mousedown", e => {
   selecting = true;
   sx = e.offsetX;
   sy = e.offsetY;
-};
+});
 
-ov.onmousemove = e => {
+ov.addEventListener("mousemove", e => {
   if (!selecting) return;
+
   const x = e.offsetX;
   const y = e.offsetY;
 
@@ -79,15 +116,17 @@ ov.onmousemove = e => {
     h: Math.abs(y - sy)
   };
 
-  ovCtx.clearRect(0,0,ov.width,ov.height);
+  ovCtx.clearRect(0, 0, ov.width, ov.height);
   ovCtx.strokeStyle = "lime";
   ovCtx.lineWidth = 2;
   ovCtx.strokeRect(roi.x, roi.y, roi.w, roi.h);
-};
+});
 
-ov.onmouseup = () => selecting = false;
+ov.addEventListener("mouseup", () => selecting = false);
+ov.addEventListener("mouseleave", () => selecting = false);
 
-/* Main loop */
+/* ===== Main Loop ===== */
+
 function loop() {
   capCtx.drawImage(video, 0, 0);
 
