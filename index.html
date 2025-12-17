@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
-<title>Contrast-based Number OCR v0.3</title>
+<title>Contrast-based Number OCR v.0.2</title>
 <style>
   body {
     margin: 0;
@@ -26,16 +26,12 @@
     position: absolute;
     top: 0; left: 0;
     z-index: 2;
+    pointer-events: auto;
     cursor: crosshair;
   }
   #result {
     font-size: 32px;
     margin-top: 10px;
-  }
-  #rawResult, #confidence {
-    font-size: 14px;
-    color: #aaa;
-    margin-top: 4px;
   }
   button {
     font-size: 16px;
@@ -48,10 +44,7 @@
 
 <h2>Contrast-based Screen Number OCR</h2>
 <button id="start">화면 공유 시작</button>
-
 <div id="result">---</div>
-<div id="rawResult">raw: ---</div>
-<div id="confidence">confidence: ---</div>
 
 <div id="container">
   <canvas id="capture"></canvas>
@@ -67,10 +60,7 @@ const cap = document.getElementById("capture");
 const ov = document.getElementById("overlay");
 const capCtx = cap.getContext("2d");
 const ovCtx = ov.getContext("2d");
-
 const resultDiv = document.getElementById("result");
-const rawResultDiv = document.getElementById("rawResult");
-const confidenceDiv = document.getElementById("confidence");
 
 let roi = null;
 let selecting = false;
@@ -132,11 +122,8 @@ function loop() {
 
   if (roi && roi.w > 10 && roi.h > 10) {
     const img = capCtx.getImageData(roi.x, roi.y, roi.w, roi.h);
-    const raw = readNumber(img);
-    const stable = stableValue(raw);
-
-    resultDiv.textContent = stable ?? "---";
-    rawResultDiv.textContent = "raw: " + (raw ?? "---");
+    const value = stableValue(readNumber(img));
+    resultDiv.textContent = value ?? "---";
   }
   requestAnimationFrame(loop);
 }
@@ -152,19 +139,10 @@ function readNumber(img) {
   if (!digits.length) return null;
 
   let out = "";
-  let confSum = 0;
-
   for (const [l, r] of digits) {
-    const { digit, confidence } = matchDigitWithConfidence(
-      digitBits(clean, img.width, img.height, l, r)
-    );
-    out += digit;
-    confSum += confidence;
+    const bits = digitBits(clean, img.width, img.height, l, r);
+    out += matchDigit(bits);
   }
-
-  confidenceDiv.textContent =
-    "confidence: " + (confSum / digits.length).toFixed(2);
-
   return out;
 }
 
@@ -193,7 +171,7 @@ function adaptiveBinarize(gray) {
   return bin;
 }
 
-/* ---- denoise ---- */
+/* ---- denoise (3x3 majority) ---- */
 function denoise(bin, w, h) {
   const out = new Uint8Array(bin.length);
   for (let y = 1; y < h-1; y++) {
@@ -208,7 +186,7 @@ function denoise(bin, w, h) {
   return out;
 }
 
-/* ---- split digits ---- */
+/* ---- vertical projection split ---- */
 function splitDigits(bin, w, h) {
   const proj = new Int32Array(w);
   for (let x = 0; x < w; x++)
@@ -227,7 +205,7 @@ function splitDigits(bin, w, h) {
   return res;
 }
 
-/* ---- digit bits ---- */
+/* ---- 7-segment-like bit extraction ---- */
 function digitBits(bin, w, h, l, r) {
   const seg = new Int32Array(7);
   for (let y = 0; y < h; y++) {
@@ -244,7 +222,7 @@ function digitBits(bin, w, h, l, r) {
   return bits;
 }
 
-/* ---- digit match + confidence ---- */
+/* ---- digit match ---- */
 const DIGITS = {
   0: 0b1110111,
   1: 0b0100100,
@@ -258,26 +236,17 @@ const DIGITS = {
   9: 0b1101111,
 };
 
-function matchDigitWithConfidence(bits) {
+function matchDigit(bits) {
   let best = "?";
-  let bestErr = 999;
-  let secondErr = 999;
-
+  let err = 999;
   for (const k in DIGITS) {
     const e = bitCount(bits ^ DIGITS[k]);
-    if (e < bestErr) {
-      secondErr = bestErr;
-      bestErr = e;
+    if (e < err) {
+      err = e;
       best = k;
-    } else if (e < secondErr) {
-      secondErr = e;
     }
   }
-
-  const maxErr = 7;
-  const confidence = Math.max(0, 1 - bestErr / maxErr);
-
-  return { digit: best, confidence };
+  return best;
 }
 
 function bitCount(n) {
